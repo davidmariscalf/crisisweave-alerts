@@ -1,0 +1,22 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m py_compile alerts.py
+      - run: |
+          python - <<'PY'
+          from alerts import evaluate
+          e={"id":"e1","kind":"flood","title":"Flood","severity":0.9,"confidence":0.8,"official":False,"area":"Madrid","source":{"name":"test"}}
+          r=[{"id":"r1","kinds":["flood"],"min_severity":0.7,"min_confidence":0.7,"area_contains":["Madrid"]}]
+          out=evaluate(e,r)
+          assert len(out)==1
+          assert out[0]['rule_id']=='r1'
+          PY
