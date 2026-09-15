@@ -11,6 +11,7 @@ from typing import Any
 MAX_RULES = 1000
 MAX_RULE_FILE_BYTES = 1024 * 1024
 MAX_EVENT_LINE_CHARS = 2 * 1024 * 1024
+MAX_EVENTS = 100_000
 
 
 def _score(value: Any) -> float | None:
@@ -180,11 +181,27 @@ def evaluate(event: dict[str, Any], rules: list[dict[str, Any]]) -> list[dict[st
     return out
 
 
+def _reject_json_constant(value: str):
+    raise ValueError(f"non-standard JSON constant is not allowed: {value}")
+
+
 def _load_rules(path: str) -> list[dict[str, Any]]:
     rule_path = Path(path)
     if rule_path.stat().st_size > MAX_RULE_FILE_BYTES:
         raise ValueError(f"rules file exceeds {MAX_RULE_FILE_BYTES} bytes")
-    return validate_rules(json.loads(rule_path.read_text(encoding="utf-8")))
+    return validate_rules(json.loads(rule_path.read_text(encoding="utf-8"), parse_constant=_reject_json_constant))
+
+
+def parse_event_line(line: str, number: int) -> dict[str, Any]:
+    if len(line) > MAX_EVENT_LINE_CHARS:
+        raise ValueError(f"stdin line {number} exceeds {MAX_EVENT_LINE_CHARS} characters")
+    try:
+        event = json.loads(line, parse_constant=_reject_json_constant)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"stdin line {number} is invalid JSON: {exc.msg}") from exc
+    if not isinstance(event, dict):
+        raise ValueError(f"stdin line {number} must contain a JSON object")
+    return event
 
 
 def main() -> int:
@@ -197,12 +214,17 @@ def main() -> int:
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(str(exc)) from exc
 
+    processed = 0
     for number, line in enumerate(sys.stdin, 1):
-        if len(line) > MAX_EVENT_LINE_CHARS:
-            raise SystemExit(f"stdin line {number} exceeds {MAX_EVENT_LINE_CHARS} characters")
         if not line.strip():
             continue
-        event = json.loads(line)
+        if processed >= MAX_EVENTS:
+            raise SystemExit(f"stdin exceeds {MAX_EVENTS} events")
+        try:
+            event = parse_event_line(line, number)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        processed += 1
         for alert in evaluate(event, rules):
             print(json.dumps(alert, ensure_ascii=False, allow_nan=False))
     return 0
