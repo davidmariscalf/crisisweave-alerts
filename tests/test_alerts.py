@@ -1,7 +1,16 @@
 import math
+import tempfile
 import unittest
+from pathlib import Path
 
-from alerts import evaluate, matches, validate_rules
+from alerts import (
+    MAX_EVENT_LINE_CHARS,
+    _load_rules,
+    evaluate,
+    matches,
+    parse_event_line,
+    validate_rules,
+)
 
 
 class AlertTests(unittest.TestCase):
@@ -82,6 +91,25 @@ class AlertTests(unittest.TestCase):
         first = evaluate(self.event(), rules)
         second = evaluate(self.event(), rules)
         self.assertEqual(first, second)
+
+    def test_cli_parser_rejects_non_object_records(self):
+        with self.assertRaises(ValueError):
+            parse_event_line('["not", "an", "event"]', 1)
+
+    def test_cli_parser_rejects_non_standard_json_constants(self):
+        with self.assertRaises(ValueError):
+            parse_event_line('{"id":"e1","severity":NaN}', 1)
+
+    def test_cli_parser_rejects_oversized_line(self):
+        with self.assertRaises(ValueError):
+            parse_event_line("x" * (MAX_EVENT_LINE_CHARS + 1), 7)
+
+    def test_rule_loader_rejects_non_standard_json_constants(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rules.json"
+            path.write_text('[{"id":"r1","min_severity":NaN}]', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                _load_rules(str(path))
 
 
 if __name__ == "__main__":
