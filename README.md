@@ -30,3 +30,7 @@ Each emitted alert includes the matching rule ID, event ID and a stable fingerpr
 ## Safety
 
 Rules are decision-support filters, not evacuation or rescue orders. Production deployments should preserve links to the original source and distinguish official instructions from CrisisWeave-generated notifications.
+
+## Freshness-aware rules
+
+Rules may include `max_age_hours`. When a rule uses it, the evaluator requires a valid `observed_at` and rejects reports older than the configured window. Expired events are also rejected when an evaluation time is supplied. The CLI evaluates against the current UTC time by default and accepts `--as-of <ISO-8601>` for deterministic drills and tests. Alert records carry the incident's evidence and verification context forward so downstream users can inspect why corroboration and confidence exist instead of seeing only a threshold result.
