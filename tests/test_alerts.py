@@ -1,6 +1,7 @@
 import math
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from alerts import (
@@ -85,6 +86,33 @@ class AlertTests(unittest.TestCase):
         ok, reasons = matches(self.event(kind="Flood", tags=["River"], area="madrid"), rule)
         self.assertTrue(ok)
         self.assertTrue(any(reason.startswith("tags=") for reason in reasons))
+
+    def test_max_age_rule_blocks_stale_report(self):
+        as_of = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        rule = self.rule(max_age_hours=2)
+        stale = self.event(observed_at="2026-01-01T08:00:00Z")
+        fresh = self.event(observed_at="2026-01-01T11:30:00Z")
+        self.assertFalse(matches(stale, rule, as_of=as_of)[0])
+        ok, reasons = matches(fresh, rule, as_of=as_of)
+        self.assertTrue(ok)
+        self.assertTrue(any(reason.startswith("age_hours=") for reason in reasons))
+
+    def test_expired_event_does_not_alert(self):
+        as_of = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        event = self.event(
+            observed_at="2026-01-01T11:30:00Z",
+            expires_at="2026-01-01T11:45:00Z",
+        )
+        self.assertEqual(evaluate(event, [self.rule()], as_of=as_of), [])
+
+    def test_alert_preserves_verification_context(self):
+        event = self.event(
+            evidence=[{"source": "Agency A", "event_id": "a"}],
+            verification={"report_count": 2, "confidence_note": "ranking signal, not probability of truth"},
+        )
+        out = evaluate(event, [self.rule()])
+        self.assertEqual(out[0]["evidence"][0]["event_id"], "a")
+        self.assertEqual(out[0]["verification"]["report_count"], 2)
 
     def test_fingerprint_is_idempotent(self):
         rules = [self.rule()]
