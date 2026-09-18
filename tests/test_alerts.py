@@ -97,6 +97,17 @@ class AlertTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertTrue(any(reason.startswith("age_hours=") for reason in reasons))
 
+    def test_naive_as_of_is_treated_as_utc(self):
+        as_of = datetime(2026, 1, 1, 12, 0)
+        rule = self.rule(max_age_hours=2)
+        event = self.event(
+            observed_at="2026-01-01T11:30:00Z",
+            expires_at="2026-01-01T13:00:00Z",
+        )
+        ok, reasons = matches(event, rule, as_of=as_of)
+        self.assertTrue(ok)
+        self.assertTrue(any(reason.startswith("age_hours=") for reason in reasons))
+
     def test_expired_event_does_not_alert(self):
         as_of = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
         event = self.event(
