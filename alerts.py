@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,18 @@ def _score(value: Any) -> float | None:
     if not math.isfinite(number) or not 0.0 <= number <= 1.0:
         return None
     return number
+
+
+def _dt(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _strict_bool(value: Any) -> bool | None:
@@ -82,6 +95,16 @@ def validate_rules(rules: Any) -> list[dict[str, Any]]:
         if official_only is None:
             raise ValueError(f"rule {rule_id} official_only must be boolean")
 
+        max_age_raw = raw.get("max_age_hours")
+        max_age_hours = None
+        if max_age_raw is not None:
+            try:
+                max_age_hours = float(max_age_raw)
+            except (TypeError, ValueError):
+                raise ValueError(f"rule {rule_id} max_age_hours must be numeric") from None
+            if not math.isfinite(max_age_hours) or max_age_hours < 0:
+                raise ValueError(f"rule {rule_id} max_age_hours must be finite and non-negative")
+
         normalized.append(
             {
                 **raw,
@@ -90,6 +113,7 @@ def validate_rules(rules: Any) -> list[dict[str, Any]]:
                 "min_severity": min_severity,
                 "min_confidence": min_confidence,
                 "official_only": official_only,
+                "max_age_hours": max_age_hours,
                 "area_contains": [x.casefold() for x in _norm_strings(raw.get("area_contains"), f"rule {rule_id} area_contains", max_items=100, max_chars=256)],
                 "tags_any": [x.casefold() for x in _norm_strings(raw.get("tags_any"), f"rule {rule_id} tags_any", max_items=100, max_chars=128)],
             }
@@ -97,11 +121,28 @@ def validate_rules(rules: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def matches(event: dict[str, Any], rule: dict[str, Any]) -> tuple[bool, list[str]]:
+def matches(event: dict[str, Any], rule: dict[str, Any], *, as_of: datetime | None = None) -> tuple[bool, list[str]]:
     if not isinstance(event, dict) or not str(event.get("id") or "").strip():
         return False, []
 
     reasons: list[str] = []
+
+    if as_of is not None:
+        expires_at = _dt(event.get("expires_at"))
+        if expires_at is not None and expires_at <= as_of:
+            return False, []
+
+    max_age_hours = rule.get("max_age_hours")
+    if max_age_hours is not None:
+        if as_of is None:
+            return False, []
+        observed_at = _dt(event.get("observed_at"))
+        if observed_at is None:
+            return False, []
+        age_hours = (as_of - observed_at).total_seconds() / 3600.0
+        if age_hours < 0 or age_hours > float(max_age_hours):
+            return False, []
+        reasons.append(f"age_hours={age_hours:.3f}<={float(max_age_hours):.3f}")
 
     kinds = rule.get("kinds") or []
     event_kind = str(event.get("kind") or "other").casefold()
@@ -168,14 +209,17 @@ def alert_for(event: dict[str, Any], rule: dict[str, Any], reasons: list[str]) -
         "area": event.get("area"),
         "source": event.get("source"),
         "observed_at": event.get("observed_at"),
+        "expires_at": event.get("expires_at"),
+        "evidence": event.get("evidence"),
+        "verification": event.get("verification"),
         "reasons": list(reasons),
     }
 
 
-def evaluate(event: dict[str, Any], rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def evaluate(event: dict[str, Any], rules: list[dict[str, Any]], *, as_of: datetime | None = None) -> list[dict[str, Any]]:
     out = []
     for rule in rules:
-        ok, reasons = matches(event, rule)
+        ok, reasons = matches(event, rule, as_of=as_of)
         if ok:
             out.append(alert_for(event, rule, reasons))
     return out
@@ -207,10 +251,14 @@ def parse_event_line(line: str, number: int) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate CrisisWeave events against transparent alert rules")
     parser.add_argument("rules", help="JSON file containing a list of rules")
+    parser.add_argument("--as-of", help="UTC/ISO-8601 evaluation time for deterministic freshness checks")
     args = parser.parse_args()
 
     try:
         rules = _load_rules(args.rules)
+        as_of = _dt(args.as_of) if args.as_of else datetime.now(timezone.utc)
+        if args.as_of and as_of is None:
+            raise ValueError("--as-of must be a valid ISO-8601 timestamp")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -225,7 +273,7 @@ def main() -> int:
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
         processed += 1
-        for alert in evaluate(event, rules):
+        for alert in evaluate(event, rules, as_of=as_of):
             print(json.dumps(alert, ensure_ascii=False, allow_nan=False))
     return 0
 
