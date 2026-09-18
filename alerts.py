@@ -128,6 +128,7 @@ def matches(event: dict[str, Any], rule: dict[str, Any], *, as_of: datetime | No
     reasons: list[str] = []
 
     if as_of is not None:
+        as_of = as_of.replace(tzinfo=timezone.utc) if as_of.tzinfo is None else as_of.astimezone(timezone.utc)
         expires_at = _dt(event.get("expires_at"))
         if expires_at is not None and expires_at <= as_of:
             return False, []
